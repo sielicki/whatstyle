@@ -41,16 +41,18 @@ if (((sys.version_info[0] == 2) and (sys.version_info[1] < 7)) or (
                      ' is required to run whatstyle\n')
     sys.exit(1)
 
+import pathlib
 import argparse
 import codecs
 import re
+from io import StringIO
 import subprocess
 from collections import OrderedDict, namedtuple
 from pprint import pprint
 
 import dumpformatoptions
 
-FIRST_SUPPORTED_VERSION = '3.5'
+FIRST_SUPPORTED_VERSION = '10.0'
 # Uncomment the next line to support ancient clang versions.
 # FIRST_SUPPORTED_VERSION = None
 
@@ -132,43 +134,21 @@ def git_format_commits(cwd):
     (commithash, content of Format.h, content of docs/conf.py)
     for each commit of Format.h.
     """
-    relpaths = 'include/clang/Format/Format.h include/clang/Tooling/Inclusions/IncludeStyle.h'.split()
+    relpaths = 'clang/include/clang/Format/Format.h clang/include/clang/Tooling/Inclusions/IncludeStyle.h'.split()
     for commit in reversed(git_commits(cwd, *relpaths)):
         format_h = unistr(gitcat(cwd, commit, relpaths[0]))
         includestyle_h = unistr(gitcat(cwd, commit, relpaths[1]))
-        conf_py = unistr(gitcat(cwd, commit, 'docs/conf.py'))
+        conf_py = unistr(gitcat(cwd, commit, 'clang/docs/conf.py'))
         yield commit, format_h, includestyle_h, conf_py
 
 
-def parse_options(format_h_lines, includestyle_h):
+def parse_options(format_h, includestyle_h):
     """Parses the options from the lines of Format.h
     by using a modified version of clangs dumpformatoption.py.
 
     Returns the options and a list of unknown option types.
     """
-    unknown_optiontypes = []
-
-    def isknownoptiontype(optiontype):
-        is_known_type = optiontype in [
-            'bool', 'unsigned', 'int', 'std::string', 'std::vector<std::string>',
-            'std::vector<IncludeCategory>', 'std::vector<RawStringFormat>',
-            'std::vector<std::pair<std::string, unsigned>>'
-        ]
-        if is_known_type:
-            return True
-        elif '::' in optiontype:
-            # An attempt at future-proofing this code...
-            unknown_optiontypes.append(optiontype)
-            return True
-        return False
-
-    options = dumpformatoptions.read_options(format_h_lines, isknownoptiontype)
-    try:
-        options += dumpformatoptions.read_options(includestyle_h, isknownoptiontype)
-    except Exception as exc:
-        pass
-    options = sorted(options, key=lambda x: x.name)
-    return options, unknown_optiontypes
+    return list(dumpformatoptions.OptionsReader(StringIO(format_h)).read_options()) + list(dumpformatoptions.OptionsReader(StringIO(includestyle_h)).read_options())
 
 
 def parse_styles(clangworkdir):
@@ -198,7 +178,7 @@ def parse_styles(clangworkdir):
             m = re.match("release = '(.*)'", line)
             if m:
                 release = m.group(1)
-
+        print("processing commit")
         format_h_lines = format_h.splitlines()
         # Record the format style names
         # e.g. 'FormatStyle getChromiumStyle();' => 'Chromium'
@@ -211,13 +191,17 @@ def parse_styles(clangworkdir):
                     base_formats.append(formatname)
 
         try:
-            options, unknown_optiontypes = parse_options(format_h_lines, includestyle_h)
-        except Exception:
+            options = parse_options(format_h, includestyle_h)
+        except Exception as e:
+            print("Exception: ", e)
+            breakpoint()
+            sys.exit(1)
             continue
         for t in unknown_optiontypes:
             unknown_types.add(t)
         style_options = []
         for opt in options:
+            print(dict(opt))
             configs = []
             if opt.enum:
                 for enumvalue in opt.enum.values:
@@ -322,9 +306,9 @@ def option_rep(optionname, optiondef):
 def main():
     parser = argparse.ArgumentParser(
         description='Create clang-format format history from a clang git repo.')
-    parser.add_argument('clangrepo', nargs=1, help='path of a clang repository')
+    parser.add_argument('clangrepo', type=pathlib.Path, help='path of a clang repository')
     args = parser.parse_args()
-    generate_style_history(args.clangrepo[0])
+    generate_style_history(str(args.clangrepo))
 
 
 if __name__ == '__main__':
